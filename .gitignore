@@ -1,0 +1,11 @@
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Local runtime artifacts
+out/
+*.log
+
+# OS metadata
+.DS_Store
