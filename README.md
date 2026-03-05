@@ -51,7 +51,7 @@ GEMINI_API_KEY=your_key_here
 # GEMINI_CACHE_OUT=out/${YYYYMMDD-HHMM}.json
 
 # advanced convenience defaults (usually leave unset)
-# GEMINI_CACHE_FILES=./README.md,./SKILL.md,./gemini-explicit-cache.ts,./images/example.png
+# GEMINI_CACHE_FILES=./README.md,./SKILL.md,./gemini-explicit-cache.ts,/path/to/image.jpg
 # GEMINI_QUERY_PROMPT=Summarize this cache in 8 bullets.
 # GEMINI_LIST_PAGE_SIZE=20
 # GEMINI_SYSTEM_FILE=./system.txt
@@ -72,7 +72,7 @@ bun run ./gemini-explicit-cache.ts create \
   --file ./README.md \
   --file ./SKILL.md \
   --file ./gemini-explicit-cache.ts \
-  --file ./images/example.png \
+  --file /path/to/image.jpg \
   --display-name my-cache
 ```
 
@@ -83,7 +83,7 @@ bun run ./gemini-explicit-cache.ts create \
   --file ./README.md \
   --file ./SKILL.md \
   --file ./gemini-explicit-cache.ts \
-  --file ./images/example.png \
+  --file /path/to/image.jpg \
   --display-name my-cache \
   --prompt "Summarize key points."
 ```
@@ -108,6 +108,7 @@ bun run ./gemini-explicit-cache.ts delete --cache cachedContents/your_cache_id
 
 Add `--json` to commands for machine-readable output.
 `create` accepts UTF-8 text files and image files (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`).
+Image inputs are uploaded to the Gemini Files API and referenced from the cache seed.
 Gemini explicit cache has a minimum content size requirement. If create fails with `Cached content is too small`, include more files in the cache input.
 
 ## 4. Full CLI Reference
@@ -179,6 +180,7 @@ bun run ./gemini-explicit-cache.ts <command> [options]
   - prints cache summary in pretty mode
   - prints full JSON when `--json` is set
   - writes JSON file when `--out` (or `GEMINI_CACHE_OUT`) is set
+  - includes `textFileCount` and `imageFileCount` in JSON mode
 - `query`:
   - pretty mode prints extracted text (plus usage metadata when available)
   - `--json` prints full API response

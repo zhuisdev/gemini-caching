@@ -15,6 +15,7 @@ Use this skill for Gemini explicit caching on stable local UTF-8 text and image 
 - Auto-loads local `./.env` if present
 - Defaults: model `gemini-3-flash-preview`, TTL `1620s`
 - Supported image formats: `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`
+- Image inputs are uploaded via Gemini Files API before cache creation.
 
 ## Agent Workflow
 
