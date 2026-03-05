@@ -41,10 +41,34 @@ type CommonOptions = {
   json: boolean;
 };
 
-type FilePayload = {
+type TextFilePayload = {
+  kind: "text";
   displayPath: string;
   sizeBytes: number;
   content: string;
+};
+
+type ImageFilePayload = {
+  kind: "image";
+  displayPath: string;
+  sizeBytes: number;
+  mimeType: string;
+  absolutePath: string;
+};
+
+type FilePayload = TextFilePayload | ImageFilePayload;
+
+type GeminiPart =
+  | { text: string }
+  | { inlineData: { mimeType: string; data: string } }
+  | { fileData: { mimeType: string; fileUri: string } };
+
+const SUPPORTED_IMAGE_MIME_BY_EXT: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
 };
 
 function usage(): string {
@@ -58,7 +82,7 @@ function usage(): string {
     "  GEMINI_BASE_URL (optional)",
     "  GEMINI_MODEL (optional default model)",
     "  GEMINI_CACHE_NAME (optional default for query/get/delete)",
-    "  GEMINI_CACHE_FILES (optional default files for create; comma-separated)",
+    "  GEMINI_CACHE_FILES (optional default files for create; comma-separated; text or image paths)",
     "  GEMINI_SYSTEM_FILE / GEMINI_SYSTEM (optional defaults for create)",
     "  GEMINI_CACHE_OUT (optional default --out path for create)",
     "  GEMINI_QUERY_PROMPT (optional default --prompt for query)",
@@ -74,6 +98,9 @@ function usage(): string {
     "",
     "TTL format:",
     "  1620s | 27m | 1h | 300 (seconds).",
+    "",
+    "Supported image formats:",
+    "  .png | .jpg | .jpeg | .webp | .gif",
     "",
     `Defaults: model=${DEFAULT_MODEL}, ttl=${DEFAULT_TTL} (27 minutes).`,
   ].join("\n");
@@ -404,7 +431,49 @@ function parseCommand(argv: string[]): {
   fail(`unknown command "${command}".\n\n${usage()}`);
 }
 
-async function readTextFiles(paths: string[]): Promise<FilePayload[]> {
+function toDisplayPath(absolutePath: string): string {
+  const relativeToCwd = path.relative(process.cwd(), absolutePath);
+  return relativeToCwd && !relativeToCwd.startsWith("..") && !path.isAbsolute(relativeToCwd)
+    ? relativeToCwd.split(path.sep).join("/")
+    : path.basename(absolutePath);
+}
+
+function detectImageMimeType(absolutePath: string, bytes: Uint8Array): string | undefined {
+  const extMime = SUPPORTED_IMAGE_MIME_BY_EXT[path.extname(absolutePath).toLowerCase()];
+  if (extMime) {
+    return extMime;
+  }
+
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47
+  ) {
+    return "image/png";
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (bytes.length >= 6) {
+    const gifHeader = String.fromCharCode(...bytes.slice(0, 6));
+    if (gifHeader === "GIF87a" || gifHeader === "GIF89a") {
+      return "image/gif";
+    }
+  }
+  if (bytes.length >= 12) {
+    const riff = String.fromCharCode(...bytes.slice(0, 4));
+    const webp = String.fromCharCode(...bytes.slice(8, 12));
+    if (riff === "RIFF" && webp === "WEBP") {
+      return "image/webp";
+    }
+  }
+
+  return undefined;
+}
+
+async function readInputFiles(paths: string[]): Promise<FilePayload[]> {
   const deduped = [...new Set(paths.map((entry) => path.resolve(entry)))];
   const files: FilePayload[] = [];
   for (const absolutePath of deduped) {
@@ -412,13 +481,31 @@ async function readTextFiles(paths: string[]): Promise<FilePayload[]> {
     if (!metadata || !metadata.isFile()) {
       fail(`not a readable file: ${absolutePath}`);
     }
-    const content = await readFile(absolutePath, "utf8");
-    const relativeToCwd = path.relative(process.cwd(), absolutePath);
-    const displayPath =
-      relativeToCwd && !relativeToCwd.startsWith("..") && !path.isAbsolute(relativeToCwd)
-        ? relativeToCwd.split(path.sep).join("/")
-        : path.basename(absolutePath);
+    const raw = await readFile(absolutePath);
+    const bytes = new Uint8Array(raw);
+    const displayPath = toDisplayPath(absolutePath);
+    const imageMimeType = detectImageMimeType(absolutePath, bytes);
+    if (imageMimeType) {
+      files.push({
+        kind: "image",
+        displayPath,
+        sizeBytes: metadata.size,
+        mimeType: imageMimeType,
+        absolutePath,
+      });
+      continue;
+    }
+
+    let content = "";
+    try {
+      content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      const supportedExtensions = Object.keys(SUPPORTED_IMAGE_MIME_BY_EXT).join(", ");
+      fail(`unsupported binary file: ${absolutePath}. Use UTF-8 text or image files (${supportedExtensions}).`);
+    }
+
     files.push({
+      kind: "text",
       displayPath,
       sizeBytes: metadata.size,
       content,
@@ -427,22 +514,155 @@ async function readTextFiles(paths: string[]): Promise<FilePayload[]> {
   return files;
 }
 
-function buildCachedTextFromFiles(files: FilePayload[]): string {
-  const header = [
+function resolveUploadBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.replace(/\/+$/, "");
+  const versionSuffixMatch = trimmed.match(/(\/v[^/]+)$/);
+  if (!versionSuffixMatch) {
+    return `${trimmed}/upload/v1beta`;
+  }
+  const versionSuffix = versionSuffixMatch[1];
+  return `${trimmed.slice(0, -versionSuffix.length)}/upload${versionSuffix}`;
+}
+
+function formatErrorDetails(responseText: string): string {
+  try {
+    return JSON.stringify(JSON.parse(responseText), null, 2);
+  } catch {
+    return responseText;
+  }
+}
+
+async function uploadImageFileForGeminiCache(params: {
+  apiKey: string;
+  baseUrl: string;
+  absolutePath: string;
+  mimeType: string;
+  displayName: string;
+}): Promise<{ fileUri: string; mimeType: string }> {
+  const uploadBaseUrl = resolveUploadBaseUrl(params.baseUrl);
+  const startEndpoint = `${uploadBaseUrl}/files?key=${encodeURIComponent(params.apiKey)}`;
+  const raw = await readFile(params.absolutePath);
+  const bytes = new Uint8Array(raw);
+
+  const startResponse = await fetch(startEndpoint, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-goog-upload-protocol": "resumable",
+      "x-goog-upload-command": "start",
+      "x-goog-upload-header-content-length": String(bytes.byteLength),
+      "x-goog-upload-header-content-type": params.mimeType,
+    },
+    body: JSON.stringify({
+      file: {
+        displayName: params.displayName,
+      },
+    }),
+  });
+  const startResponseText = await startResponse.text();
+  if (!startResponse.ok) {
+    fail(
+      `failed to start image upload (${startResponse.status} ${startResponse.statusText})\n` +
+        `${formatErrorDetails(startResponseText)}`,
+    );
+  }
+  const uploadUrl = startResponse.headers.get("x-goog-upload-url");
+  if (!uploadUrl) {
+    fail(`image upload start did not return x-goog-upload-url for ${params.absolutePath}`);
+  }
+
+  const finalizeResponse = await fetch(uploadUrl, {
+    method: "POST",
+    headers: {
+      "x-goog-upload-command": "upload, finalize",
+      "x-goog-upload-offset": "0",
+      "content-length": String(bytes.byteLength),
+    },
+    body: bytes,
+  });
+  const finalizeText = await finalizeResponse.text();
+  if (!finalizeResponse.ok) {
+    fail(
+      `failed to upload image (${finalizeResponse.status} ${finalizeResponse.statusText})\n` +
+        `${formatErrorDetails(finalizeText)}`,
+    );
+  }
+
+  let parsed: Record<string, unknown> = {};
+  if (finalizeText.trim()) {
+    try {
+      parsed = JSON.parse(finalizeText) as Record<string, unknown>;
+    } catch {
+      fail(`image upload returned invalid JSON: ${finalizeText.slice(0, 500)}`);
+    }
+  }
+  const fileObject =
+    parsed.file && typeof parsed.file === "object" ? (parsed.file as Record<string, unknown>) : parsed;
+  const fileUri = typeof fileObject.uri === "string" ? fileObject.uri : "";
+  const mimeType = typeof fileObject.mimeType === "string" ? fileObject.mimeType : params.mimeType;
+  if (!fileUri) {
+    fail(`image upload response missing file uri for ${params.absolutePath}`);
+  }
+  return { fileUri, mimeType };
+}
+
+async function buildCachedPartsFromFiles(
+  files: FilePayload[],
+  options: { apiKey: string; baseUrl: string },
+): Promise<GeminiPart[]> {
+  const textFileCount = files.filter((file) => file.kind === "text").length;
+  const imageFileCount = files.length - textFileCount;
+  const parts: GeminiPart[] = [
+    {
+      text: [
     "Bundle source: explicit cache seed files",
     `File count: ${files.length}`,
+        `Text files: ${textFileCount}`,
+        `Image files: ${imageFileCount}`,
     "",
-  ].join("\n");
-  const sections = files.map((file, index) => {
-    return [
-      `## File ${index + 1}: ${file.displayPath}`,
-      `size_bytes=${file.sizeBytes}`,
-      "",
-      file.content,
-      "",
-    ].join("\n");
-  });
-  return `${header}${sections.join("\n")}`;
+      ].join("\n"),
+    },
+  ];
+  let textIndex = 0;
+  let imageIndex = 0;
+  for (const file of files) {
+    if (file.kind === "text") {
+      textIndex += 1;
+      parts.push({
+        text: [
+          `## Text File ${textIndex}: ${file.displayPath}`,
+          `size_bytes=${file.sizeBytes}`,
+          "",
+          file.content,
+          "",
+        ].join("\n"),
+      });
+      continue;
+    }
+    imageIndex += 1;
+    parts.push({
+      text: [
+        `## Image File ${imageIndex}: ${file.displayPath}`,
+        `size_bytes=${file.sizeBytes}`,
+        `mime_type=${file.mimeType}`,
+        "",
+      ].join("\n"),
+    });
+    const uploaded = await uploadImageFileForGeminiCache({
+      apiKey: options.apiKey,
+      baseUrl: options.baseUrl,
+      absolutePath: file.absolutePath,
+      mimeType: file.mimeType,
+      displayName: path.basename(file.displayPath),
+    });
+    parts.push({
+      fileData: {
+        mimeType: uploaded.mimeType,
+        fileUri: uploaded.fileUri,
+      },
+    });
+  }
+  return parts;
 }
 
 async function requestJson<T>(url: string, init: RequestInit): Promise<T> {
@@ -456,13 +676,7 @@ async function requestJson<T>(url: string, init: RequestInit): Promise<T> {
 
   const responseText = await response.text();
   if (!response.ok) {
-    let details = responseText;
-    try {
-      details = JSON.stringify(JSON.parse(responseText), null, 2);
-    } catch {
-      // keep raw text
-    }
-    fail(`request failed (${response.status} ${response.statusText})\n${details}`);
+    fail(`request failed (${response.status} ${response.statusText})\n${formatErrorDetails(responseText)}`);
   }
 
   if (!responseText.trim()) {
@@ -492,8 +706,11 @@ async function readSystemInstruction(value?: string): Promise<string | undefined
 }
 
 async function createCache(options: CreateOptions) {
-  const files = await readTextFiles(options.filePaths);
-  const text = buildCachedTextFromFiles(files);
+  const files = await readInputFiles(options.filePaths);
+  const parts = await buildCachedPartsFromFiles(files, {
+    apiKey: options.apiKey,
+    baseUrl: options.baseUrl,
+  });
   const systemInstruction = await readSystemInstruction(options.systemInstruction);
   const endpoint = `${options.baseUrl.replace(/\/+$/, "")}/cachedContents?key=${encodeURIComponent(options.apiKey)}`;
 
@@ -504,7 +721,7 @@ async function createCache(options: CreateOptions) {
     contents: [
       {
         role: "user",
-        parts: [{ text }],
+        parts,
       },
     ],
   };
@@ -600,11 +817,15 @@ function printPrettyCreateResult(params: {
   ttl: string;
   followup?: Record<string, unknown>;
 }) {
+  const textFileCount = params.files.filter((file) => file.kind === "text").length;
+  const imageFileCount = params.files.length - textFileCount;
   console.log(`cache.name=${String(params.cache.name ?? "")}`);
   console.log(`cache.model=${String(params.cache.model ?? "")}`);
   console.log(`cache.expire_time=${String(params.cache.expireTime ?? "")}`);
   console.log(`cache.ttl_requested=${params.ttl}`);
   console.log(`cache.file_count=${params.files.length}`);
+  console.log(`cache.text_file_count=${textFileCount}`);
+  console.log(`cache.image_file_count=${imageFileCount}`);
   console.log(`cache.file_bytes_total=${params.files.reduce((sum, file) => sum + file.sizeBytes, 0)}`);
   const usageMetadata = params.cache.usageMetadata;
   if (usageMetadata && typeof usageMetadata === "object") {
@@ -651,6 +872,8 @@ async function main() {
         ttl: parsed.create.ttl,
         displayName: parsed.create.displayName ?? null,
         fileCount: files.length,
+        textFileCount: files.filter((file) => file.kind === "text").length,
+        imageFileCount: files.filter((file) => file.kind === "image").length,
       },
       cache,
       followupQuery: followup ?? null,

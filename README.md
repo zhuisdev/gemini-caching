@@ -5,10 +5,11 @@
 `gemini-explicit-cache.ts` is a small CLI for Gemini explicit caching workflows:
 
 - create a cache from local text files
+- include local image files in the cache seed
 - query with an existing cache
 - inspect, list, and delete cache entries
 
-It is designed for stable documents (for example local skill docs, prompt files, and tool references).
+It is designed for stable local sources (for example skill docs, prompt files, tool references, and images).
 
 ## 2. How To Setup
 
@@ -50,7 +51,7 @@ GEMINI_API_KEY=your_key_here
 # GEMINI_CACHE_OUT=out/${YYYYMMDD-HHMM}.json
 
 # advanced convenience defaults (usually leave unset)
-# GEMINI_CACHE_FILES=./README.md,./SKILL.md,./gemini-explicit-cache.ts
+# GEMINI_CACHE_FILES=./README.md,./SKILL.md,./gemini-explicit-cache.ts,./images/example.png
 # GEMINI_QUERY_PROMPT=Summarize this cache in 8 bullets.
 # GEMINI_LIST_PAGE_SIZE=20
 # GEMINI_SYSTEM_FILE=./system.txt
@@ -71,6 +72,7 @@ bun run ./gemini-explicit-cache.ts create \
   --file ./README.md \
   --file ./SKILL.md \
   --file ./gemini-explicit-cache.ts \
+  --file ./images/example.png \
   --display-name my-cache
 ```
 
@@ -81,6 +83,7 @@ bun run ./gemini-explicit-cache.ts create \
   --file ./README.md \
   --file ./SKILL.md \
   --file ./gemini-explicit-cache.ts \
+  --file ./images/example.png \
   --display-name my-cache \
   --prompt "Summarize key points."
 ```
@@ -104,6 +107,7 @@ bun run ./gemini-explicit-cache.ts delete --cache cachedContents/your_cache_id
 ### JSON output mode
 
 Add `--json` to commands for machine-readable output.
+`create` accepts UTF-8 text files and image files (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`).
 Gemini explicit cache has a minimum content size requirement. If create fails with `Cached content is too small`, include more files in the cache input.
 
 ## 4. Full CLI Reference
@@ -131,7 +135,7 @@ bun run ./gemini-explicit-cache.ts <command> [options]
 
 - API key: required via `GEMINI_API_KEY` or `GOOGLE_API_KEY`
 - `create` file input:
-  - positional files and/or repeated `--file`
+  - positional files and/or repeated `--file` (UTF-8 text and image files)
   - fallback: `GEMINI_CACHE_FILES`
 - `query` prompt:
   - `--prompt`
@@ -146,7 +150,7 @@ bun run ./gemini-explicit-cache.ts <command> [options]
 - `GEMINI_BASE_URL`: API base URL (default `https://generativelanguage.googleapis.com/v1beta`)
 - `GEMINI_MODEL`: default model for `create` (default `gemini-3-flash-preview`)
 - `GEMINI_CACHE_TTL` or `GEMINI_EXPLICIT_CACHE_TTL`: default TTL for `create` (default `1620s`)
-- `GEMINI_CACHE_FILES`: default create file list (comma/newline/semicolon separated)
+- `GEMINI_CACHE_FILES`: default create file list (comma/newline/semicolon separated; UTF-8 text and image paths)
 - `GEMINI_SYSTEM` or `GEMINI_SYSTEM_FILE`: default system instruction (mutually exclusive)
 - `GEMINI_CACHE_OUT`: default output path for `create --out`
 - `GEMINI_QUERY_PROMPT`: default prompt for `query`
@@ -166,6 +170,8 @@ bun run ./gemini-explicit-cache.ts <command> [options]
   - minutes with suffix: `27m`
   - hours with suffix: `1h`
   - integer seconds: `300`
+- image formats accepted for cache seed files:
+  - `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`
 
 ### Output behavior
 

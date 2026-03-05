@@ -5,7 +5,7 @@ description: "Create, query, inspect, list, and delete Gemini explicit cache ent
 
 # Gemini Explicit Cache
 
-Use this skill for Gemini explicit caching on stable local text files.
+Use this skill for Gemini explicit caching on stable local UTF-8 text and image files.
 
 ## Runtime
 
@@ -14,6 +14,7 @@ Use this skill for Gemini explicit caching on stable local text files.
 - Auth: `GEMINI_API_KEY` or `GOOGLE_API_KEY`
 - Auto-loads local `./.env` if present
 - Defaults: model `gemini-3-flash-preview`, TTL `1620s`
+- Supported image formats: `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`
 
 ## Agent Workflow
 
